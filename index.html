@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Firebase DVD Bounce</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #111; color: white; font-family: sans-serif; }
+        canvas { display: block; position: absolute; top: 0; left: 0; }
+        
+        /* UI Overlay for Setup */
+        #ui-layer {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            background: rgba(0,0,0,0.9); z-index: 10;
+        }
+        .input-group { margin: 10px 0; text-align: left; }
+        label { display: block; margin-bottom: 5px; font-size: 14px; color: #ccc; }
+        input { padding: 8px; border-radius: 4px; border: 1px solid #555; background: #222; color: white; }
+        button { padding: 10px 20px; border: none; background: #007bff; color: white; font-size: 16px; border-radius: 5px; cursor: pointer; margin-top: 15px; }
+        button:hover { background: #0056b3; }
+        h1 { margin-bottom: 20px; }
+        .hidden { display: none !important; }
+        #status { position: absolute; bottom: 10px; left: 10px; color: gray; font-size: 12px; z-index: 5;}
+    </style>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <h1>Multi-Screen DVD</h1>
+        
+        <div class="input-group">
+            <label>Role:</label>
+            <select id="roleInput" style="padding: 8px; background: #222; color: white;">
+                <option value="client">Viewer (Client)</option>
+                <option value="host">Master (Host)</option>
+            </select>
+        </div>
+
+        <div class="input-group">
+            <label>My X Offset (Where is this phone?)</label>
+            <input type="number" id="offsetX" value="0" placeholder="e.g., 0">
+        </div>
+        <div class="input-group">
+            <label>My Y Offset</label>
+            <input type="number" id="offsetY" value="0" placeholder="e.g., 0">
+        </div>
+
+        <div class="input-group">
+            <label>Total Virtual Width (All screens combined)</label>
+            <input type="number" id="totalW" value="1000">
+        </div>
+        <div class="input-group">
+            <label>Total Virtual Height</label>
+            <input type="number" id="totalH" value="1000">
+        </div>
+
+        <button onclick="startGame()">Start Screen</button>
+    </div>
+
+    <div id="status">Waiting for setup...</div>
+    <canvas id="gameCanvas"></canvas>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
+        import { getDatabase, ref, set, onValue, update } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
+
+        // --- PASTE YOUR FIREBASE CONFIG HERE ---
+        const firebaseConfig = {
+            apiKey: "YOUR_API_KEY",
+            authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+            databaseURL: "https://YOUR_PROJECT_ID-default-rtdb.firebaseio.com",
+            projectId: "YOUR_PROJECT_ID",
+            storageBucket: "YOUR_PROJECT_ID.appspot.com",
+            messagingSenderId: "YOUR_ID",
+            appId: "YOUR_APP_ID"
+        };
+        // ---------------------------------------
+
+        const app = initializeApp(firebaseConfig);
+        const db = getDatabase(app);
+        const coordsRef = ref(db, 'dvd/position');
+        const configRef = ref(db, 'dvd/config');
+
+        // State Variables
+        let isHost = false;
+        let myOffsetX = 0;
+        let myOffsetY = 0;
+        let virtualWidth = 1000;
+        let virtualHeight = 1000;
+        
+        // DVD Logo State
+        let dvdState = { x: 50, y: 50, vx: 3, vy: 3, color: '#ff0000' };
+        const logoWidth = 100;
+        const logoHeight = 50;
+
+        // Canvas Setup
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        
+        function resize() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        // Colors for the bounce
+        const colors = ['#ff0000', '#00ff00', '#0000ff', '#ffff00', '#00ffff', '#ff00ff'];
+
+        // --- GAME LOOP ---
+
+        window.startGame = function() {
+            // Get values from UI
+            myOffsetX = parseInt(document.getElementById('offsetX').value) || 0;
+            myOffsetY = parseInt(document.getElementById('offsetY').value) || 0;
+            virtualWidth = parseInt(document.getElementById('totalW').value) || 1000;
+            virtualHeight = parseInt(document.getElementById('totalH').value) || 1000;
+            isHost = document.getElementById('roleInput').value === 'host';
+
+            // Hide UI
+            document.getElementById('ui-layer').classList.add('hidden');
+            document.getElementById('status').innerText = isHost ? "Hosting Physics..." : "Watching...";
+
+            if (isHost) {
+                // Initialize DB with basic config if I am host
+                update(configRef, { w: virtualWidth, h: virtualHeight });
+                requestAnimationFrame(hostLoop);
+            }
+
+            // Everyone listens to the DB
+            listenToChanges();
+            requestAnimationFrame(renderLoop);
+        };
+
+        function hostLoop() {
+            // 1. Update Position
+            dvdState.x += dvdState.vx;
+            dvdState.y += dvdState.vy;
+
+            // 2. Bounce Logic (Wall Collision)
+            let hit = false;
+            // Right Wall
+            if (dvdState.x + logoWidth >= virtualWidth) {
+                dvdState.x = virtualWidth - logoWidth;
+                dvdState.vx *= -1;
+                hit = true;
+            }
+            // Left Wall
+            else if (dvdState.x <= 0) {
+                dvdState.x = 0;
+                dvdState.vx *= -1;
+                hit = true;
+            }
+            // Bottom Wall
+            if (dvdState.y + logoHeight >= virtualHeight) {
+                dvdState.y = virtualHeight - logoHeight;
+                dvdState.vy *= -1;
+                hit = true;
+            }
+            // Top Wall
+            else if (dvdState.y <= 0) {
+                dvdState.y = 0;
+                dvdState.vy *= -1;
+                hit = true;
+            }
+
+            // Change color on hit
+            if (hit) {
+                dvdState.color = colors[Math.floor(Math.random() * colors.length)];
+            }
+
+            // 3. Send to Firebase
+            set(coordsRef, dvdState);
+
+            requestAnimationFrame(hostLoop);
+        }
+
+        function listenToChanges() {
+            // Listen for position updates
+            onValue(coordsRef, (snapshot) => {
+                const data = snapshot.val();
+                if (data) {
+                    // If I am NOT the host, I update my local state from the DB
+                    // If I am host, I ignore this (I am the source of truth)
+                    if (!isHost) { 
+                        dvdState = data; 
+                    }
+                }
+            });
+
+            // Listen for config updates (in case host changes size)
+            onValue(configRef, (snapshot) => {
+                const data = snapshot.val();
+                if (data) {
+                    virtualWidth = data.w;
+                    virtualHeight = data.h;
+                }
+            });
+        }
+
+        function renderLoop() {
+            // Clear Screen
+            ctx.fillStyle = '#111';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Calculate Local Position relative to THIS device
+            // Global Position - My Offset = Screen Position
+            const localX = dvdState.x - myOffsetX;
+            const localY = dvdState.y - myOffsetY;
+
+            // Draw DVD Logo
+            ctx.fillStyle = dvdState.color;
+            ctx.fillRect(localX, localY, logoWidth, logoHeight);
+            
+            // Text
+            ctx.fillStyle = 'black';
+            ctx.font = '20px Arial';
+            ctx.fillText("DVD", localX + 30, localY + 32);
+
+            // Draw Debug Border (shows where the virtual screen edges are)
+            ctx.strokeStyle = '#333';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(0 - myOffsetX, 0 - myOffsetY, virtualWidth, virtualHeight);
+
+            requestAnimationFrame(renderLoop);
+        }
+    </script>
+</body>
+</html>
