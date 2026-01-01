@@ -12,7 +12,7 @@
             position: absolute;
             width: 100px;
             height: 50px;
-            background: blue; /* Fallback */
+            background: blue;
             color: white;
             font-weight: bold;
             display: flex;
@@ -22,11 +22,11 @@
             border-radius: 5px;
             box-shadow: 0 0 10px rgba(255,255,255,0.5);
             will-change: transform;
-            /* Using transform for smoother animation */
             top: 0; left: 0;
+            z-index: 10;
         }
 
-        /* Setup Screen / Grid Picker */
+        /* Setup Screen */
         #setup-screen {
             position: fixed; top: 0; left: 0; width: 100%; height: 100%;
             background: #1a1a1a;
@@ -37,11 +37,16 @@
             z-index: 100;
         }
         h2 { margin-bottom: 20px; text-align: center; }
+        
         .grid-container {
             display: grid;
-            grid-template-columns: repeat(3, 80px); /* 3x3 Grid */
+            grid-template-columns: repeat(3, 80px); /* 3 columns, 80px wide */
             gap: 10px;
+            background: #222;
+            padding: 10px;
+            border-radius: 10px;
         }
+        
         .grid-box {
             width: 80px; height: 80px;
             background: #333;
@@ -52,6 +57,7 @@
             justify-content: center;
             font-size: 24px;
             border-radius: 8px;
+            user-select: none;
         }
         .grid-box:hover { background: #444; border-color: #fff; }
         .grid-box.taken { background: #500; border-color: #f00; cursor: not-allowed; opacity: 0.5; }
@@ -59,6 +65,7 @@
         #status {
             position: fixed; bottom: 10px; right: 10px;
             color: gray; font-size: 10px; pointer-events: none;
+            z-index: 50;
         }
     </style>
 </head>
@@ -68,9 +75,9 @@
 
     <div id="setup-screen">
         <h2>Select this device's<br>position in the wall</h2>
-        <div class="grid-container" id="grid">
-            </div>
+        <div class="grid-container" id="grid"></div>
         <p style="margin-top:20px; color: #888; font-size: 0.8em;">(Row, Column)</p>
+        <p id="error-msg" style="color: red; display: none; margin-top: 10px;">Error: Check Firebase Config</p>
     </div>
 
     <div id="status">Waiting for setup...</div>
@@ -79,46 +86,12 @@
     <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-database-compat.js"></script>
 
     <script>
-        /**
-         * -----------------------------------------------------------
-         * CONFIGURATION
-         * -----------------------------------------------------------
-         */
-        const firebaseConfig = {
-    const firebaseConfig = {
-  apiKey: "AIzaSyDFFIM-hOCR8BHL9W_ji8NJwLZH0OleAQ0",
-  authDomain: "dvdlogothingy.firebaseapp.com",
-  databaseURL: "https://dvdlogothingy-default-rtdb.firebaseio.com",
-  projectId: "dvdlogothingy",
-  storageBucket: "dvdlogothingy.firebasestorage.app",
-  messagingSenderId: "203177996220",
-  appId: "1:203177996220:web:5d95399673795bd9da05b9"
-        };
-
-        // Initialize Firebase
-        firebase.initializeApp(firebaseConfig);
-        const db = firebase.database();
-        const devicesRef = db.ref('devices');
-        const syncRef = db.ref('syncState');
-
-        // Global Variables
-        const myId = 'device_' + Math.random().toString(36).substr(2, 9);
-        let allDevices = {};
-        let myPosition = null; // {r: 0, c: 0}
-        
-        // DVD Physics Constants
-        const DVD_WIDTH = 100;
-        const DVD_HEIGHT = 50;
-        const SPEED_X = 0.2; // Pixels per millisecond
-        const SPEED_Y = 0.2; 
-        
-        // --- STEP 1: UI & SETUP ---
-        
+        // --- 1. DRAW THE GRID FIRST (So UI always loads) ---
         function createGrid() {
             const gridEl = document.getElementById('grid');
+            if(!gridEl) return;
             gridEl.innerHTML = '';
             
-            // Create a simple 3x3 grid (Rows 0-2, Cols 0-2)
             for (let r = 0; r < 3; r++) {
                 for (let c = 0; c < 3; c++) {
                     const div = document.createElement('div');
@@ -130,18 +103,60 @@
                 }
             }
         }
+        // Run this immediately!
+        createGrid();
 
-        // When user picks a slot
+
+        /**
+         * -----------------------------------------------------------
+         * CONFIGURATION 
+         * -----------------------------------------------------------
+         */
+        const firebaseConfig = {
+  apiKey: "AIzaSyDFFIM-hOCR8BHL9W_ji8NJwLZH0OleAQ0",
+  authDomain: "dvdlogothingy.firebaseapp.com",
+  databaseURL: "https://dvdlogothingy-default-rtdb.firebaseio.com",
+  projectId: "dvdlogothingy",
+  storageBucket: "dvdlogothingy.firebasestorage.app",
+  messagingSenderId: "203177996220",
+  appId: "1:203177996220:web:5d95399673795bd9da05b9"
+};
+
+        // -----------------------------------------------------------
+
+
+        // Initialize Firebase safely
+        let db, devicesRef, syncRef;
+        const myId = 'device_' + Math.random().toString(36).substr(2, 9);
+        let allDevices = {};
+        let myPosition = null;
+
+        try {
+            firebase.initializeApp(firebaseConfig);
+            db = firebase.database();
+            devicesRef = db.ref('devices');
+            syncRef = db.ref('syncState');
+            console.log("Firebase connected successfully");
+        } catch (e) {
+            console.error("Firebase Error:", e);
+            document.getElementById('error-msg').style.display = 'block';
+            document.getElementById('error-msg').innerText = "Error: Firebase config is missing or wrong. Check console.";
+        }
+
+        // --- DVD LOGIC ---
+        const DVD_WIDTH = 100;
+        const DVD_HEIGHT = 50;
+        const SPEED_X = 0.2; 
+        const SPEED_Y = 0.2; 
+
         function selectPosition(row, col) {
+            if (!db) { alert("Database not connected! Check your code config."); return; }
+
             myPosition = { r: row, c: col };
             
-            // Save my device info to Firebase
             const deviceData = {
-                id: myId,
-                row: row,
-                col: col,
-                width: window.innerWidth,
-                height: window.innerHeight,
+                id: myId, row: row, col: col,
+                width: window.innerWidth, height: window.innerHeight,
                 timestamp: firebase.database.ServerValue.TIMESTAMP
             };
 
@@ -151,53 +166,32 @@
                 initSync();
             });
 
-            // Handle window resize (update DB if screen size changes)
             window.onresize = () => {
-                devicesRef.child(myId).update({
-                    width: window.innerWidth,
-                    height: window.innerHeight
-                });
+                devicesRef.child(myId).update({ width: window.innerWidth, height: window.innerHeight });
             };
-            
-            // Remove device on disconnect (close tab)
             devicesRef.child(myId).onDisconnect().remove();
         }
 
-        // Listen for other devices to gray out taken slots
-        devicesRef.on('value', (snapshot) => {
-            const data = snapshot.val();
-            if(!data) return;
-            
-            // Update grid UI (if still in setup)
-            document.querySelectorAll('.grid-box').forEach(el => el.classList.remove('taken'));
-            Object.values(data).forEach(device => {
-                const el = document.getElementById(`slot-${device.row}-${device.col}`);
-                if (el && device.id !== myId) el.classList.add('taken');
+        if (devicesRef) {
+            devicesRef.on('value', (snapshot) => {
+                const data = snapshot.val();
+                if(!data) return;
+                
+                // Update grid visual
+                document.querySelectorAll('.grid-box').forEach(el => el.classList.remove('taken'));
+                Object.values(data).forEach(device => {
+                    const el = document.getElementById(`slot-${device.row}-${device.col}`);
+                    if (el && device.id !== myId) el.classList.add('taken');
+                });
+                allDevices = data;
             });
-            
-            // Update local state for animation
-            allDevices = data;
-        });
-
-        createGrid();
-
-
-        // --- STEP 2: SYNCHRONIZATION & ANIMATION ---
-
-        let animationFrameId;
+        }
 
         function initSync() {
-            // Ensure there is a global start time for the animation
-            // If nobody has set it, I will.
             syncRef.child('startTime').transaction((current) => {
                 return current || Date.now();
             }, (error, committed, snapshot) => {
-                if (committed) {
-                    startAnimationLoop(snapshot.val());
-                } else {
-                    // Start time already existed, fetch it
-                    syncRef.child('startTime').once('value', s => startAnimationLoop(s.val()));
-                }
+                startAnimationLoop(snapshot.val() || Date.now());
             });
         }
 
@@ -209,8 +203,6 @@
                 const now = Date.now();
                 const elapsed = now - startTime;
 
-                // 1. Calculate the TOTAL canvas size based on connected devices
-                // We sum the max width of each column and max height of each row
                 let colWidths = [0, 0, 0];
                 let rowHeights = [0, 0, 0];
 
@@ -222,57 +214,38 @@
                 const totalWidth = colWidths.reduce((a, b) => a + b, 0);
                 const totalHeight = rowHeights.reduce((a, b) => a + b, 0);
 
-                if (totalWidth === 0 || totalHeight === 0) {
-                    requestAnimationFrame(loop);
-                    return;
-                }
+                if (totalWidth === 0 || totalHeight === 0) { requestAnimationFrame(loop); return; }
 
-                // 2. Calculate MY offset relative to the big canvas
                 let myOffsetX = 0;
                 for (let c = 0; c < myPosition.c; c++) myOffsetX += colWidths[c];
-                
                 let myOffsetY = 0;
                 for (let r = 0; r < myPosition.r; r++) myOffsetY += rowHeights[r];
 
-                // 3. Calculate Global DVD Position (Deterministic Ping-Pong)
-                // The logo bounces between 0 and (Total - LogoSize)
                 const maxX = totalWidth - DVD_WIDTH;
                 const maxY = totalHeight - DVD_HEIGHT;
 
-                // PingPong math: abs( (t * speed) % (2*max) - max ) produces a triangle wave 0->max->0
-                // Note: We need a slight offset logic to make it strictly 0 to max
-                // Standard pingpong: 
                 const distX = (elapsed * SPEED_X);
                 const distY = (elapsed * SPEED_Y);
 
-                // This math creates a "bouncing" value between 0 and maxX
                 const rawX = distX % (2 * maxX);
                 const globalX = rawX < maxX ? rawX : (2 * maxX) - rawX;
 
                 const rawY = distY % (2 * maxY);
                 const globalY = rawY < maxY ? rawY : (2 * maxY) - rawY;
-                
-                // Color cycling logic (optional fun)
+
                 const hue = (elapsed / 50) % 360;
                 logo.style.backgroundColor = `hsl(${hue}, 70%, 50%)`;
 
-                // 4. Convert Global Position to Local Screen Position
-                // Local X = Global X - My Offset in the wall
                 const localX = globalX - myOffsetX;
                 const localY = globalY - myOffsetY;
 
-                // Apply to DOM
                 logo.style.transform = `translate(${localX}px, ${localY}px)`;
-
-                // Debug info
-                status.innerText = `Pos: ${Math.round(globalX)},${Math.round(globalY)} | MyOffset: ${myOffsetX},${myOffsetY}`;
+                status.innerText = `Pos: ${Math.round(globalX)},${Math.round(globalY)}`;
 
                 requestAnimationFrame(loop);
             }
-            
             requestAnimationFrame(loop);
         }
-
     </script>
 </body>
 </html>
